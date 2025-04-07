@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Spectrum Analyzer (1kHz-22.05kHz)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        header {
+            padding: 1rem;
+            text-align: center;
+            width: 100%;
+        }
+        h1 {
+            margin: 0;
+            color: #4fc3f7;
+            font-size: 1.8rem;
+        }
+        #status {
+            color: #aaa;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+        #visualizer {
+            width: 100%;
+            height: 80vh;
+            position: relative;
+        }
+        #controls {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+            padding: 0.5rem;
+            background-color: rgba(0, 0, 0, 0.3);
+            border-radius: 5px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        label {
+            font-size: 0.8rem;
+            margin-bottom: 0.2rem;
+            color: #bbb;
+        }
+        select, button {
+            background-color: #333;
+            color: #eee;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 0.3rem 0.5rem;
+        }
+        button {
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #444;
+        }
+        .info {
+            position: absolute;
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.6);
+        }
+        #freq-label {
+            bottom: 5px;
+            left: 10px;
+        }
+        #db-label {
+            bottom: 5px;
+            right: 10px;
+        }
+        .disconnected {
+            color: #ff5252;
+        }
+        .connected {
+            color: #69f0ae;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <header>
+            <h1>Advanced Audio Spectrum Analyzer (1kHz-22.05kHz)</h1>
+            <div id="status">Connecting to server...</div>
+            <div id="controls">
+                <div class="control-group">
+                    <label for="view-mode">Visualization</label>
+                    <select id="view-mode">
+                        <option value="bars">Bars</option>
+                        <option value="line">Line</option>
+                        <option value="area">Area</option>
+                        <option value="circular">Circular</option>
+                        <option value="3d">3D Bars</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="color-scheme">Colors</label>
+                    <select id="color-scheme">
+                        <option value="rainbow">Rainbow</option>
+                        <option value="gradient">Blue-Red</option>
+                        <option value="monochrome">Monochrome</option>
+                        <option value="fire">Fire</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="scale-mode">Scale</label>
+                    <select id="scale-mode">
+                        <option value="logarithmic">Logarithmic</option>
+                        <option value="linear">Linear</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="smoothing">Smoothing</label>
+                    <select id="smoothing">
+                        <option value="0.3">Medium</option>
+                        <option value="0.5">High</option>
+                        <option value="0.1">Low</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <button id="fullscreen-btn">Fullscreen</button>
+                </div>
+            </div>
+        </header>
+        <div id="visualizer"></div>
+        <div id="freq-label" class="info">Frequency (Hz)</div>
+        <div id="db-label" class="info">Level (dB)</div>
+    </div>
+
+    <script>
+        let socket;
+        let spectrumData = null;
+        let smoothingFactor = 0.3;
+        let viewMode = 'bars';
+        let colorScheme = 'rainbow';
+        let scaleMode = 'logarithmic';
+        let connected = false;
+        let lastUpdateTime = 0;
+        let p5Instance = null;
+        
+        const colorSchemes = {
+            rainbow: [
+                [25, 25, 112],   // Midnight Blue
+                [0, 0, 255],     // Blue
+                [0, 255, 255],   // Cyan
+                [0, 255, 0],     // Green
+                [255, 255, 0],   // Yellow
+                [255, 165, 0],   // Orange
+                [255, 0, 0]      // Red
+            ],
+            gradient: [
+                [0, 50, 100],    // Dark Blue
+                [0, 100, 200],   // Blue
+                [0, 150, 255],   // Light Blue
+                [0, 255, 200],   // Cyan
+                [50, 255, 50],   // Green
+                [255, 255, 0],   // Yellow
+                [255, 100, 0],   // Orange
+                [255, 0, 0]      // Red
+            ],
+            monochrome: [
+                [20, 20, 40],    // Very Dark Blue
+                [40, 40, 80],    // Dark Blue
+                [80, 80, 160],   // Blue
+                [120, 120, 200], // Medium Blue
+                [160, 160, 240]  // Light Blue
+            ],
+            fire: [
+                [10, 0, 0],      // Near Black
+                [50, 0, 0],      // Very Dark Red
+                [100, 10, 0],    // Dark Red
+                [160, 30, 0],    // Red
+                [220, 100, 0],   // Orange
+                [255, 200, 0]    // Yellow
+            ]
+        };
+        
+        // Connect to WebSocket server
+        function connectWebSocket() {
+            // Determine WebSocket URL based on current page
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host || 'localhost:8080';
+            const wsUrl = `${protocol}//${host}/spectrum`;
+            
+            socket = new WebSocket(wsUrl);
+            
+            socket.onopen = function() {
+                connected = true;
+                document.getElementById('status').textContent = 'Connected';
+                document.getElementById('status').className = 'connected';
+                console.log('Connected to WebSocket server');
+            };
+            
+            socket.onmessage = function(event) {
+                try {
+                    spectrumData = JSON.parse(event.data);
+                    lastUpdateTime = Date.now();
+                } catch (e) {
+                    console.error('Error parsing spectrum data:', e);
+                }
+            };
+            
+            socket.onclose = function() {
+                if (connected) {
+                    connected = false;
+                    document.getElementById('status').textContent = 'Disconnected. Trying to reconnect...';
+                    document.getElementById('status').className = 'disconnected';
+                    console.log('Connection closed. Attempting to reconnect...');
+                    setTimeout(connectWebSocket, 2000);
+                }
+            };
+            
+            socket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                socket.close();
+            };
+        }
+        
+        function restartP5() {
+            if (p5Instance) {
+                p5Instance.remove();
+            }
+            p5Instance = new p5(p5sketch, 'visualizer');
+        }
+        
+        function p5sketch(p) {
+            p.setup = function() {
+                const visualizer = document.getElementById('visualizer');
+                const canvas = p.createCanvas(visualizer.offsetWidth, visualizer.offsetHeight, viewMode === '3d' ? p.WEBGL : p.P2D);
+                canvas.parent('visualizer');
+                
+                window.addEventListener('resize', function() {
+                    const visualizer = document.getElementById('visualizer');
+                    p.resizeCanvas(visualizer.offsetWidth, visualizer.offsetHeight);
+                });
+            };
+            
+            p.draw = function() {
+                const now = Date.now();
+                p.background(17);
+                
+                if (!spectrumData || now - lastUpdateTime > 2000) {
+                    drawNoSignal(p);
+                    return;
+                }
+                
+                switch(viewMode) {
+                    case 'bars':
+                        drawBars(p);
+                        break;
+                    case 'line':
+                        drawLine(p);
+                        break;
+                    case 'area':
+                        drawArea(p);
+                        break;
+                    case 'circular':
+                        drawCircular(p);
+                        break;
+                    case '3d':
+                        draw3DBars(p);
+                        break;
+                    default:
+                        drawBars(p);
+                }
+                
+                drawFrequencyScale(p);
+                
+                drawAmplitudeScale(p);
+            };
+        }
+        
+        function drawNoSignal(p) {
+            p.fill(50);
+            p.textSize(18);
+            p.textAlign(p.CENTER, p.CENTER);
+            p.text('Waiting for audio data...', p.width / 2, p.height / 2);
+        }
+        
+        function drawBars(p) {
+            if (!spectrumData || !spectrumData.frequencyData) return;
+            
+            const barCount = spectrumData.frequencyData.length;
+            const barWidth = p.width / barCount;
+            
+            for (let i = 0; i < barCount; i++) {
+                const value = spectrumData.frequencyData[i];
+                const peak = spectrumData.peakData[i];
+                
+                const normalizedValue = normalizeDb(value, spectrumData.minDb, spectrumData.maxDb);
+                const normalizedPeak = normalizeDb(peak, spectrumData.minDb, spectrumData.maxDb);
+                
+                const barHeight = normalizedValue * p.height;
+                
+                const barColor = getColorForValue(p, normalizedValue, colorSchemes[colorScheme]);
+                
+                p.noStroke();
+                p.fill(barColor[0], barColor[1], barColor[2]);
+                p.rect(i * barWidth, p.height - barHeight, barWidth, barHeight);
+                
+                const peakY = p.height - (normalizedPeak * p.height);
+                p.stroke(255);
+                p.strokeWeight(1);
+                p.line(i * barWidth, peakY, (i + 1) * barWidth, peakY);
+            }
+        }
+        
+        function drawLine(p) {
+            if (!spectrumData || !spectrumData.frequencyData) return;
+            
+            const data = spectrumData.frequencyData;
+            const peakData = spectrumData.peakData;
+            const dataLen = data.length;
+            
+            p.noFill();
+            p.strokeWeight(2);
+            p.beginShape();
+            for (let i = 0; i < dataLen; i++) {
+                const normalized = normalizeDb(data[i], spectrumData.minDb, spectrumData.maxDb);
+                const x = (i / (dataLen - 1)) * p.width;
+                const y = p.height - (normalized * p.height);
+                
+                const color = getColorForValue(p, normalized, colorSchemes[colorScheme]);
+                p.stroke(color[0], color[1], color[2]);
+                
+                p.vertex(x, y);
+            }
+            p.endShape();
+            
+            p.strokeWeight(1);
+            p.stroke(255, 100);
+            p.beginShape();
+            for (let i = 0; i < dataLen; i++) {
+                const normalized = normalizeDb(peakData[i], spectrumData.minDb, spectrumData.maxDb);
+                const x = (i / (dataLen - 1)) * p.width;
+                const y = p.height - (normalized * p.height);
+                p.vertex(x, y);
+            }
+            p.endShape();
+        }
+        
+        function drawArea(p) {
+            if (!spectrumData || !spectrumData.frequencyData) return;
+            
+            const data = spectrumData.frequencyData;
+            const peakData = spectrumData.peakData;
+            const dataLen = data.length;
+            
+            p.beginShape();
+            p.vertex(0, p.height);
+            
+            for (let i = 0; i < dataLen; i++) {
+                const normalized = normalizeDb(data[i], spectrumData.minDb, spectrumData.maxDb);
+                const x = (i / (dataLen - 1)) * p.width;
+                const y = p.height - (normalized * p.height);
+                
+                const progress = i / (dataLen - 1);
+                const colorIdx = Math.floor(progress * (colorSchemes[colorScheme].length - 1));
+                const color1 = colorSchemes[colorScheme][colorIdx];
+                const color2 = colorSchemes[colorScheme][Math.min(colorIdx + 1, colorSchemes[colorScheme].length - 1)];
+                const t = (progress * (colorSchemes[colorScheme].length - 1)) % 1;
+                
+                const r = p.lerp(color1[0], color2[0], t);
+                const g = p.lerp(color1[1], color2[1], t);
+                const b = p.lerp(color1[2], color2[2], t);
+                
+                p.fill(r, g, b, 200);
+                p.vertex(x, y);
+            }
+            
+            p.vertex(p.width, p.height);
+            p.endShape(p.CLOSE);
+            
+            p.strokeWeight(2);
+            p.stroke(255, 180);
+            p.noFill();
+            p.beginShape();
+            for (let i = 0; i < dataLen; i++) {
+                const normalized = normalizeDb(peakData[i], spectrumData.minDb, spectrumData.maxDb);
+                const x = (i / (dataLen - 1)) * p.width;
+                const y = p.height - (normalized * p.height);
+                p.vertex(x, y);
+            }
+            p.endShape();
+        }
+        
+        function drawCircular(p) {
+            if (!spectrumData || !spectrumData.frequencyData) return;
+            
+            const data = spectrumData.frequencyData;
+            const peakData = spectrumData.peakData;
+            const dataLen = data.length;
+            const centerX = p.width / 2;
+            const centerY = p.height / 2;
+            const maxRadius = Math.min(p.width, p.height) * 0.4;
+            
+            p.push();
+            p.translate(centerX, centerY);
+            
+            for (let i = 0; i < dataLen; i++) {
+                const angle = (i / dataLen) * p.TWO_PI;
+                const normalized = normalizeDb(data[i], spectrumData.minDb, spectrumData.maxDb);
+                const peakNormalized = normalizeDb(peakData[i], spectrumData.minDb, spectrumData.maxDb);
+                
+                const innerRadius = maxRadius * 0.2;
+                const outerRadius = innerRadius + (maxRadius * 0.8 * normalized);
+                const peakRadius = innerRadius + (maxRadius * 0.8 * peakNormalized);
+                
+                const barWidth = p.TWO_PI / dataLen;
+                
+                const color = getColorForValue(p, normalized, colorSchemes[colorScheme]);
+                
+                p.noStroke();
+                p.fill(color[0], color[1], color[2]);
+                p.arc(0, 0, outerRadius * 2, outerRadius * 2, angle, angle + barWidth, p.PIE);
+                
+                p.fill(17);
+                p.ellipse(0, 0, innerRadius * 2, innerRadius * 2);
+                
+                p.stroke(255, 180);
+                p.strokeWeight(1);
+                p.noFill();
+                const x1 = peakRadius * p.cos(angle);
+                const y1 = peakRadius * p.sin(angle);
+                const x2 = peakRadius * p.cos(angle + barWidth);
+                const y2 = peakRadius * p.sin(angle + barWidth);
+                p.line(x1, y1, x2, y2);
+            }
+            p.pop();
+        }
+        
+        function draw3DBars(p) {
+            if (!spectrumData || !spectrumData.frequencyData) return;
+            
+            p.background(0);
+            p.ambientLight(60, 60, 60);
+            p.pointLight(255, 255, 255, 0, 0, 500);
+            
+            const barCount = spectrumData.frequencyData.length;
+            const maxHeight = 200;
+            
+            const camX = p.map(p.mouseX, 0, p.width, -200, 200);
+            const camY = p.map(p.mouseY, 0, p.height, -200, 200);
+            p.camera(camX, camY, 500, 0, 0, 0, 0, 1, 0);
+            
+            const barWidth = 8; 
+            const totalWidth = barCount * barWidth;
+            const startX = -totalWidth / 2;
+            
+            for (let i = 0; i < barCount; i++) {
+                const normalized = normalizeDb(spectrumData.frequencyData[i], spectrumData.minDb, spectrumData.maxDb);
+                const barHeight = normalized * maxHeight;
+                
+                const color = getColorForValue(p, normalized, colorSchemes[colorScheme]);
+                
+                const x = startX + (i * barWidth) + (barWidth / 2);
+                const y = 0;
+                const z = 0;
+                
+                p.push();
+                p.translate(x, -barHeight/2, z);
+                p.fill(color[0], color[1], color[2]);
+                p.noStroke();
+                p.box(barWidth * 0.8, barHeight || 1, barWidth * 0.8); 
+                p.pop();
+            }
+        }
+        
+        function drawFrequencyScale(p) {
+            if (!spectrumData) return;
+            
+            const minFreq = spectrumData.minFreq;
+            const maxFreq = spectrumData.maxFreq;
+            
+            const freqLabels = [1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 22050];
+            
+            p.textSize(10);
+            p.fill(150);
+            p.noStroke();
+            p.textAlign(p.CENTER, p.TOP);
+            
+            freqLabels.forEach(freq => {
+                if (freq >= minFreq && freq <= maxFreq) {
+                    let xPos;
+                    
+                    if (scaleMode === 'logarithmic') {
+                        const logMin = Math.log10(minFreq);
+                        const logMax = Math.log10(maxFreq);
+                        const logFreq = Math.log10(freq);
+                        xPos = p.map(logFreq, logMin, logMax, 0, p.width);
+                    } else {
+                        xPos = p.map(freq, minFreq, maxFreq, 0, p.width);
+                    }
+                    
+                    p.stroke(100);
+                    p.line(xPos, p.height - 2, xPos, p.height - 5);
+                    
+                    p.noStroke();
+                    let label = freq.toString();
+                    if (freq >= 1000) {
+                        label = (freq / 1000) + 'k';
+                    }
+                    p.text(label, xPos, p.height - 15);
+                }
+            });
+        }
+        
+        function drawAmplitudeScale(p) {
+            if (!spectrumData) return;
+            
+            const dbMin = spectrumData.minDb;
+            const dbMax = spectrumData.maxDb;
+            const steps = 5;
+            const stepSize = (dbMax - dbMin) / steps;
+            
+            p.textSize(10);
+            p.fill(150);
+            p.noStroke();
+            p.textAlign(p.RIGHT, p.CENTER);
+            
+            for (let i = 0; i <= steps; i++) {
+                const db = dbMax - (i * stepSize);
+                const y = p.map(i, 0, steps, 0, p.height);
+                
+                p.stroke(100);
+                p.line(p.width - 5, y, p.width - 2, y);
+                
+                p.noStroke();
+                p.text(Math.round(db) + " dB", p.width - 10, y);
+            }
+        }
+        
+        function normalizeDb(db, min, max) {
+            return (db - min) / (max - min);
+        }
+        
+        function getColorForValue(p, value, colorArray) {
+            if (value <= 0) return colorArray[0];
+            if (value >= 1) return colorArray[colorArray.length - 1];
+            
+            const position = value * (colorArray.length - 1);
+            const index = Math.floor(position);
+            const t = position - index;
+            
+            const c1 = colorArray[index];
+            const c2 = colorArray[Math.min(index + 1, colorArray.length - 1)];
+            
+            return [
+                p.lerp(c1[0], c2[0], t),
+                p.lerp(c1[1], c2[1], t),
+                p.lerp(c1[2], c2[2], t)
+            ];
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            connectWebSocket();
+            
+            p5Instance = new p5(p5sketch, 'visualizer');
+            
+            document.getElementById('view-mode').addEventListener('change', function(e) {
+                viewMode = e.target.value;
+                if (viewMode === '3d' || (viewMode !== '3d' && p5Instance._renderer.isP3D)) {
+                    restartP5();
+                }
+            });
+            
+            document.getElementById('color-scheme').addEventListener('change', function(e) {
+                colorScheme = e.target.value;
+            });
+            
+            document.getElementById('scale-mode').addEventListener('change', function(e) {
+                scaleMode = e.target.value;
+            });
+            
+            document.getElementById('smoothing').addEventListener('change', function(e) {
+                smoothingFactor = parseFloat(e.target.value);
+            });
+            
+            document.getElementById('fullscreen-btn').addEventListener('click', function() {
+                const elem = document.getElementById('container');
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                } else if (elem.mozRequestFullScreen) {
+                    elem.mozRequestFullScreen();
+                } else if (elem.webkitRequestFullscreen) {
+                    elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) {
+                    elem.msRequestFullscreen();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
